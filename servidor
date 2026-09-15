@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+
+import asyncio
+import re
+from tcp import Servidor
+
+# Apelido -> conexão; canal -> conjunto de conexões.
+usuarios = {}
+canais = {}
+
+
+def validar_nome(nome):
+    return re.fullmatch(br'[a-zA-Z][a-zA-Z0-9_-]*', nome) is not None
+
+
+def enviar(conexao, mensagem):
+    if not conexao.encerrada:
+        try:
+            conexao.enviar(mensagem + b'\r\n')
+        except OSError:
+            # Agenda a saída para não alterar os canais durante o envio.
+            asyncio.get_event_loop().call_soon(sair, conexao)
+
+
+def colegas(conexao):
+    resultado = set()
+    for nome in conexao.canais:
+        resultado.update(canais[nome])
+    resultado.discard(conexao)
+    return resultado
+
+
+def remover_do_canal(conexao, nome):
+    canais[nome].discard(conexao)
+    conexao.canais.discard(nome)
+    if not canais[nome]:
+        del canais[nome]
+
+
+def sair(conexao, motivo=b'Connection closed'):
+    if conexao.encerrada:
+        return
+    conexao.encerrada = True
+    destinatarios = colegas(conexao)
+    for nome in tuple(conexao.canais):
+        remover_do_canal(conexao, nome)
+    if usuarios.get(conexao.nick.lower()) is conexao:
+        del usuarios[conexao.nick.lower()]
+    conexao.buffer = b''
+    conexao.fechar()
+    for outra in destinatarios:
+        enviar(outra, b':' + conexao.nick + b' QUIT :' + motivo)
+
+
+def separar(linha):
+    # O texto depois de " :" pode conter espaços.
+    linha = linha.lstrip(b' ')
+    if linha.startswith(b':'):
+        # O remetente é identificado pela conexão, não pelo prefixo recebido.
+        _, _, linha = linha.partition(b' ')
+    inicio, separador, texto = linha.partition(b' :')
+    partes = inicio.split()
+    if not partes:
+        return b'', []
+    return partes[0].upper(), partes[1:] + ([texto] if separador else [])
+
+
+def listar_membros(conexao, nome):
+    cabecalho = b':server 353 ' + conexao.nick + b' = ' + nome + b' :'
+    bloco = b''
+    for nick in sorted(membro.nick for membro in canais[nome.lower()]):
+        candidato = bloco + (b' ' if bloco else b'') + nick
+        if len(cabecalho) + len(candidato) + 2 > 512 and bloco:
+            enviar(conexao, cabecalho + bloco)
+            bloco = nick
+        else:
+            bloco = candidato
+    if bloco:
+        enviar(conexao, cabecalho + bloco)
+    enviar(conexao, b':server 366 ' + conexao.nick + b' ' + nome + b' :End of /NAMES list.')
+
+
+def tratar(conexao, linha):
+    comando, args = separar(linha)
+    if comando == b'PING' and args:
+        enviar(conexao, b':server PONG server :' + args[-1])
+    elif comando == b'QUIT':
+        sair(conexao, args[0] if args else b'Connection closed')
+
+
+def dados_recebidos(conexao, dados):
+    if conexao.encerrada:
+        return
+    if dados == b'':
+        sair(conexao)
+        return
+    # Junta os novos dados com o pedaço que sobrou da leitura anterior.
+    # Só processa quando encontra uma linha completa, terminada em CRLF.
+    conexao.buffer += dados
+    while b'\r\n' in conexao.buffer and not conexao.encerrada:
+        linha, conexao.buffer = conexao.buffer.split(b'\r\n', 1)
+        if b'\r' in linha or b'\n' in linha or b'\x00' in linha:
+            sair(conexao, b'Invalid message framing')
+            return
+        tratar(conexao, linha)
+    # Evita acumular dados indefinidamente sem receber CRLF.
+    if len(conexao.buffer) > 65536:
+        sair(conexao, b'Input buffer exceeded')
+
+
+def conexao_aceita(conexao):
+    conexao.nick = b'*'
+    conexao.buffer = b''
+    conexao.canais = set()
+    conexao.encerrada = False
+    conexao.registrar_recebedor(dados_recebidos)
+
+
+if __name__ == '__main__':
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    servidor = Servidor(6667)
+    servidor.registrar_monitor_de_conexoes_aceitas(conexao_aceita)
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.close()
