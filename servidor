@@ -86,6 +86,28 @@ def tratar(conexao, linha):
         enviar(conexao, b':server PONG server :' + args[-1])
     elif comando == b'QUIT':
         sair(conexao, args[0] if args else b'Connection closed')
+    elif comando == b'NICK' and args:
+        nick = args[0]
+        if not validar_nome(nick):
+            enviar(conexao, b':server 432 ' + conexao.nick + b' ' + nick + b' :Erroneous nickname')
+            return
+        existente = usuarios.get(nick.lower())
+        if existente is not None and existente is not conexao:
+            enviar(conexao, b':server 433 ' + conexao.nick + b' ' + nick + b' :Nickname is already in use')
+            return
+        antigo = conexao.nick
+        if antigo != b'*':
+            del usuarios[antigo.lower()]
+        conexao.nick = nick
+        usuarios[nick.lower()] = conexao
+        if antigo == b'*':
+            enviar(conexao, b':server 001 ' + nick + b' :Welcome')
+            enviar(conexao, b':server 422 ' + nick + b' :MOTD File is missing')
+        else:
+            for outra in colegas(conexao) | {conexao}:
+                enviar(outra, b':' + antigo + b' NICK ' + nick)
+    elif conexao.nick == b'*':
+        return
 
 
 def dados_recebidos(conexao, dados):
