@@ -108,6 +108,28 @@ def tratar(conexao, linha):
                 enviar(outra, b':' + antigo + b' NICK ' + nick)
     elif conexao.nick == b'*':
         return
+    elif comando == b'JOIN' and args:
+        nome = args[0]
+        if not nome.startswith(b'#') or not validar_nome(nome[1:]):
+            enviar(conexao, b':server 403 ' + nome + b' :No such channel')
+            return
+        chave = nome.lower()
+        membros = canais.setdefault(chave, set())
+        if conexao in membros:
+            return
+        membros.add(conexao)
+        conexao.canais.add(chave)
+        for outra in tuple(membros):
+            enviar(outra, b':' + conexao.nick + b' JOIN :' + nome)
+        listar_membros(conexao, nome)
+    elif comando == b'PART' and args:
+        nome = args[0]
+        chave = nome.lower()
+        if chave in conexao.canais:
+            for outra in tuple(canais[chave]):
+                # PART não inclui a mensagem de saída nesta prática.
+                enviar(outra, b':' + conexao.nick + b' PART ' + nome)
+            remover_do_canal(conexao, chave)
 
 
 def dados_recebidos(conexao, dados):
