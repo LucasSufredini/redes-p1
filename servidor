@@ -130,6 +130,15 @@ def tratar(conexao, linha):
                 # PART não inclui a mensagem de saída nesta prática.
                 enviar(outra, b':' + conexao.nick + b' PART ' + nome)
             remover_do_canal(conexao, chave)
+    elif comando == b'PRIVMSG' and len(args) >= 2:
+        destino, texto = args[:2]
+        if destino.startswith(b'#'):
+            destinatarios = canais.get(destino.lower(), set()) - {conexao}
+        else:
+            outra = usuarios.get(destino.lower())
+            destinatarios = {outra} if outra is not None else set()
+        for outra in destinatarios:
+            enviar(outra, b':' + conexao.nick + b' PRIVMSG ' + destino + b' :' + texto)
 
 
 def dados_recebidos(conexao, dados):
